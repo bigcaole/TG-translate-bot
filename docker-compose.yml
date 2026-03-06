@@ -1,0 +1,61 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tg-translate-bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      ALLOWED_USERS: ${ALLOWED_USERS:-123456789}
+      ADMIN_USERS: ${ADMIN_USERS:-123456789}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgres://postgres:postgres@postgres:5432/tg_translate?sslmode=disable}
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      GOOGLE_PROJECT_ID: ${GOOGLE_PROJECT_ID:-demo-project}
+      GOOGLE_LOCATION: ${GOOGLE_LOCATION:-global}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/secrets/google-credentials.json}
+      DEFAULT_TARGET_LANGUAGE: ${DEFAULT_TARGET_LANGUAGE:-en}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-10s}
+      CACHE_TTL: ${CACHE_TTL:-720h}
+    volumes:
+      - ./credentials:/secrets:ro
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-translate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-tg_translate}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-tg_translate}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tg-translate-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:
