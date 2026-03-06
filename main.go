@@ -38,6 +38,9 @@ func main() {
 
 	quotaManager := quota.NewManager(redisClient)
 	handler := bot.NewHandler(botAPI, cfg, store, redisClient, quotaManager, translatorClient, logger)
+	if err := bot.RegisterCommands(botAPI); err != nil {
+		logger.Printf("register bot commands failed: %v", err)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

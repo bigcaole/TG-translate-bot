@@ -95,12 +95,19 @@ docker compose up -d --build
 - `/start` 或 `/menu`：打开主菜单
 - `/set <语种代码>`：切换设定模式目标语种（示例：`/set ja`）
 - `/auto on|off`：开启/关闭自动模式
-- `/status`：查看个人设置与额度
+- `/auto_on`：快速开启自动模式
+- `/auto_off`：快速关闭自动模式
+- `/langs`：打开语种按钮菜单
+- `/quota`：查看本月额度
+- `/status`：查看个人设置
+- `/help`：查看命令帮助
 - 菜单按钮（Inline Keyboard）：
   - 切换语种
   - 自动模式
   - 本月额度
   - 个人设置
+
+机器人启动时会自动注册 Telegram 命令菜单（输入框左侧菜单按钮）。
 
 ## 配额与熔断策略
 

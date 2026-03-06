@@ -124,12 +124,24 @@ func (h *Handler) handleCommand(parent context.Context, msg *tgbotapi.Message) {
 			"/menu - 打开主菜单\n" +
 			"/set <语种代码> - 设定模式目标语种（如 /set ja）\n" +
 			"/auto on|off - 开启/关闭自动模式\n" +
-			"/status - 查看个人设置与额度"
+			"/auto_on - 快速开启自动模式\n" +
+			"/auto_off - 快速关闭自动模式\n" +
+			"/langs - 打开语种菜单\n" +
+			"/quota - 查看本月额度\n" +
+			"/status - 查看个人设置"
 		h.sendText(msg.Chat.ID, help, mainMenuKeyboard())
 	case "set":
 		h.handleSetLanguage(parent, msg.Chat.ID, msg.From.ID, args)
 	case "auto":
 		h.handleAutoCommand(parent, msg.Chat.ID, msg.From.ID, args)
+	case "auto_on":
+		h.handleAutoCommand(parent, msg.Chat.ID, msg.From.ID, "on")
+	case "auto_off":
+		h.handleAutoCommand(parent, msg.Chat.ID, msg.From.ID, "off")
+	case "langs":
+		h.sendText(msg.Chat.ID, "请选择设定模式下的目标语种：", languageKeyboard())
+	case "quota":
+		h.sendQuota(parent, msg.Chat.ID)
 	case "status":
 		h.sendStatus(parent, msg.Chat.ID, msg.From.ID)
 	default:
@@ -225,35 +237,55 @@ func (h *Handler) handleCallback(parent context.Context, cb *tgbotapi.CallbackQu
 	}
 
 	chatID := cb.Message.Chat.ID
+	messageID := cb.Message.MessageID
 	userID := cb.From.ID
 	data := cb.Data
 
 	switch {
 	case data == "menu:main":
 		h.answerCallback(cb.ID, "已返回主菜单")
-		h.sendText(chatID, "主菜单", mainMenuKeyboard())
+		h.editText(chatID, messageID, "主菜单", mainMenuKeyboard())
 	case data == "menu:lang":
 		h.answerCallback(cb.ID, "请选择语种")
-		h.sendText(chatID, "请选择设定模式下的目标语种：", languageKeyboard())
+		h.editText(chatID, messageID, "请选择设定模式下的目标语种：", languageKeyboard())
 	case strings.HasPrefix(data, "lang:"):
 		lang := normalizeLang(strings.TrimPrefix(data, "lang:"))
 		h.answerCallback(cb.ID, "语种已更新")
-		h.handleSetLanguage(parent, chatID, userID, lang)
+		h.handleSetLanguageEdit(parent, chatID, messageID, userID, lang)
 	case data == "auto:toggle":
 		h.answerCallback(cb.ID, "自动模式已切换")
-		h.toggleAutoMode(parent, chatID, userID)
+		h.toggleAutoModeEdit(parent, chatID, messageID, userID)
 	case data == "quota:view":
 		h.answerCallback(cb.ID, "正在读取额度")
-		h.sendQuota(parent, chatID)
+		h.sendQuotaEdit(parent, chatID, messageID)
 	case data == "settings:view":
 		h.answerCallback(cb.ID, "正在读取设置")
-		h.sendStatus(parent, chatID, userID)
+		h.sendStatusEdit(parent, chatID, messageID, userID)
 	case data == "bot:toggle":
 		h.answerCallback(cb.ID, "机器人开关已切换")
-		h.toggleBotEnabled(parent, chatID, userID)
+		h.toggleBotEnabledEdit(parent, chatID, messageID, userID)
 	default:
 		h.answerCallback(cb.ID, "未知操作")
 	}
+}
+
+func (h *Handler) handleSetLanguageEdit(parent context.Context, chatID int64, messageID int, userID int64, args string) {
+	lang := normalizeLang(args)
+	if !isSupportedLanguage(lang) {
+		h.editText(chatID, messageID, "语种不支持。支持：en, ru, fr, de, it, ja, ko, th, vi", languageKeyboard())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
+	defer cancel()
+
+	if err := h.store.UpdateTargetLanguage(ctx, userID, lang); err != nil {
+		h.logger.Printf("update target language failed: %v", err)
+		h.editText(chatID, messageID, "设置失败，请稍后重试。", mainMenuKeyboard())
+		return
+	}
+
+	h.editText(chatID, messageID, fmt.Sprintf("已切换目标语种为%s，并关闭自动模式。", languageNameCN(lang)), mainMenuKeyboard())
 }
 
 func (h *Handler) toggleAutoMode(parent context.Context, chatID int64, userID int64) {
@@ -281,6 +313,31 @@ func (h *Handler) toggleAutoMode(parent context.Context, chatID int64, userID in
 	h.sendText(chatID, "自动模式已关闭。", mainMenuKeyboard())
 }
 
+func (h *Handler) toggleAutoModeEdit(parent context.Context, chatID int64, messageID int, userID int64) {
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
+	defer cancel()
+
+	settings, err := h.store.GetOrCreateUserSettings(ctx, userID, h.cfg.DefaultTargetLanguage)
+	if err != nil {
+		h.logger.Printf("get settings for toggle auto failed: %v", err)
+		h.editText(chatID, messageID, "读取设置失败，请稍后重试。", mainMenuKeyboard())
+		return
+	}
+
+	next := !settings.AutoMode
+	if err := h.store.SetAutoMode(ctx, userID, next, h.cfg.DefaultTargetLanguage); err != nil {
+		h.logger.Printf("toggle auto mode failed: %v", err)
+		h.editText(chatID, messageID, "切换失败，请稍后重试。", mainMenuKeyboard())
+		return
+	}
+
+	if next {
+		h.editText(chatID, messageID, "自动模式已开启。", mainMenuKeyboard())
+		return
+	}
+	h.editText(chatID, messageID, "自动模式已关闭。", mainMenuKeyboard())
+}
+
 func (h *Handler) toggleBotEnabled(parent context.Context, chatID int64, userID int64) {
 	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
 	defer cancel()
@@ -302,6 +359,27 @@ func (h *Handler) toggleBotEnabled(parent context.Context, chatID int64, userID 
 	h.sendText(chatID, fmt.Sprintf("机器人状态已切换为：%s", onOffName(next)), settingsKeyboard())
 }
 
+func (h *Handler) toggleBotEnabledEdit(parent context.Context, chatID int64, messageID int, userID int64) {
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
+	defer cancel()
+
+	settings, err := h.store.GetOrCreateUserSettings(ctx, userID, h.cfg.DefaultTargetLanguage)
+	if err != nil {
+		h.logger.Printf("get settings for toggle bot failed: %v", err)
+		h.editText(chatID, messageID, "读取设置失败，请稍后重试。", settingsKeyboard())
+		return
+	}
+
+	next := !settings.BotEnabled
+	if err := h.store.SetBotEnabled(ctx, userID, next, h.cfg.DefaultTargetLanguage); err != nil {
+		h.logger.Printf("toggle bot enabled failed: %v", err)
+		h.editText(chatID, messageID, "切换失败，请稍后重试。", settingsKeyboard())
+		return
+	}
+
+	h.editText(chatID, messageID, fmt.Sprintf("机器人状态已切换为：%s", onOffName(next)), settingsKeyboard())
+}
+
 func (h *Handler) sendQuota(parent context.Context, chatID int64) {
 	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
 	defer cancel()
@@ -316,6 +394,50 @@ func (h *Handler) sendQuota(parent context.Context, chatID int64) {
 	ratio := float64(usage) / float64(quota.FreeQuota) * 100
 	text := fmt.Sprintf("本月已用额度：%d / %d 字符（%.2f%%）", usage, quota.FreeQuota, ratio)
 	h.sendText(chatID, text, mainMenuKeyboard())
+}
+
+func (h *Handler) sendQuotaEdit(parent context.Context, chatID int64, messageID int) {
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
+	defer cancel()
+
+	usage, err := h.quota.Usage(ctx, time.Now())
+	if err != nil {
+		h.logger.Printf("quota usage failed: %v", err)
+		h.editText(chatID, messageID, "读取额度失败，请稍后重试。", mainMenuKeyboard())
+		return
+	}
+
+	ratio := float64(usage) / float64(quota.FreeQuota) * 100
+	text := fmt.Sprintf("本月已用额度：%d / %d 字符（%.2f%%）", usage, quota.FreeQuota, ratio)
+	h.editText(chatID, messageID, text, mainMenuKeyboard())
+}
+
+func (h *Handler) sendStatusEdit(parent context.Context, chatID int64, messageID int, userID int64) {
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
+	defer cancel()
+
+	settings, err := h.store.GetOrCreateUserSettings(ctx, userID, h.cfg.DefaultTargetLanguage)
+	if err != nil {
+		h.logger.Printf("get settings failed: %v", err)
+		h.editText(chatID, messageID, "读取设置失败，请稍后重试。", mainMenuKeyboard())
+		return
+	}
+
+	usage, err := h.quota.Usage(ctx, time.Now())
+	if err != nil {
+		h.logger.Printf("get usage failed: %v", err)
+		usage = 0
+	}
+
+	status := fmt.Sprintf(
+		"个人设置\n模式：%s\n目标语种：%s\n机器人状态：%s\n\n本月已用：%d / %d 字符",
+		modeName(settings.AutoMode),
+		languageNameCN(settings.TargetLanguage),
+		onOffName(settings.BotEnabled),
+		usage,
+		quota.FreeQuota,
+	)
+	h.editText(chatID, messageID, status, settingsKeyboard())
 }
 
 func (h *Handler) handleTranslation(parent context.Context, chatID int64, userID int64, text string) {
@@ -411,6 +533,16 @@ func (h *Handler) sendText(chatID int64, text string, keyboard tgbotapi.InlineKe
 	msg.ReplyMarkup = keyboard
 	if _, err := h.api.Send(msg); err != nil {
 		h.logger.Printf("send message failed: %v", err)
+	}
+}
+
+func (h *Handler) editText(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, keyboard)
+	if _, err := h.api.Send(edit); err != nil {
+		if strings.Contains(err.Error(), "message is not modified") {
+			return
+		}
+		h.logger.Printf("edit message failed: %v", err)
 	}
 }
 
